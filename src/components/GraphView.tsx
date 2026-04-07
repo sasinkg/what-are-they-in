@@ -248,10 +248,10 @@ export default function GraphView({ userName }: { userName: string }) {
       const isShow = node.type === "show";
 
       // Show: small portrait rectangle. Actor: circle.
-      const pw = isShow ? 9 : 0;    // half-width
-      const ph = isShow ? 13 : 0;   // half-height (2:3 ratio)
+      const pw = isShow ? 7 : 0;    // half-width
+      const ph = isShow ? 10 : 0;   // half-height (2:3 ratio)
       const cr = isShow ? 2 : 0;    // corner radius
-      const r  = isShow ? 0 : 8;    // circle radius for actors
+      const r  = isShow ? 0 : 6;    // circle radius for actors
 
       ctx.globalAlpha = isHighlighted ? 1 : 0.12;
 
@@ -437,6 +437,8 @@ export default function GraphView({ userName }: { userName: string }) {
             onNodeClick={handleNodeClick as any}
             enableNodeDrag={true}
             enableZoomInteraction={true}
+            onEngineStop={() => graphRef.current?.zoomToFit(400, 60)}
+            cooldownTicks={100}
           />
         )}
       </div>
