@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import type { ForceGraphMethods } from "react-force-graph-2d";
 import AddEntrySheet from "./AddEntrySheet";
 import ConfirmDialog from "./ConfirmDialog";
+import UnlockToast from "./UnlockToast";
 
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
   ssr: false,
@@ -131,7 +132,12 @@ export default function GraphView({ userName }: { userName: string }) {
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [boardStatus, setBoardStatus] = useState<"unknown" | "complete" | "pending">("unknown");
+  const [unlockEntry, setUnlockEntry] = useState<Entry | null>(null);
   const graphRef = useRef<ForceGraphMethods<GraphNode>>(undefined);
+  const graphDataRef = useRef<GraphData>({ nodes: [], links: [] });
+  const newLinksRef = useRef<Map<string, number>>(new Map());
+  const animFrameRef = useRef<number | null>(null);
+  const LINK_ANIM_MS = 700;
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 400, height: 600 });
   const [imgTick, setImgTick] = useState(0);
@@ -156,6 +162,8 @@ export default function GraphView({ userName }: { userName: string }) {
         }
       });
   }, []);
+
+  useEffect(() => { graphDataRef.current = graphData; }, [graphData]);
 
   useEffect(() => {
     const update = () => {
@@ -190,6 +198,23 @@ export default function GraphView({ userName }: { userName: string }) {
     setHighlightIds(matched);
   }, [search, graphData]);
 
+  function startLinkAnimation() {
+    if (animFrameRef.current) return;
+    function tick() {
+      const now = Date.now();
+      for (const [id, start] of newLinksRef.current) {
+        if (now - start > LINK_ANIM_MS) newLinksRef.current.delete(id);
+      }
+      setImgTick((n) => n + 1);
+      if (newLinksRef.current.size > 0) {
+        animFrameRef.current = requestAnimationFrame(tick);
+      } else {
+        animFrameRef.current = null;
+      }
+    }
+    animFrameRef.current = requestAnimationFrame(tick);
+  }
+
   function onEntryAdded(entry: Entry) {
     setEntries((prev) => {
       const updated = [...prev, entry];
@@ -198,6 +223,36 @@ export default function GraphView({ userName }: { userName: string }) {
     });
     setBoardStatus("unknown");
     setTimeout(refreshStatus, 500);
+
+    // Show unlock toast
+    setUnlockEntry(entry);
+
+    // Register new link for draw animation
+    newLinksRef.current.set(
+      `person-${entry.tmdbPersonId}-show-${entry.tmdbShowId}`,
+      Date.now()
+    );
+    startLinkAnimation();
+
+    // Zoom into the new person node, then zoom back out
+    const newNodeId = `person-${entry.tmdbPersonId}`;
+    setTimeout(() => {
+      const g = graphRef.current;
+      if (!g) return;
+      // react-force-graph mutates node objects with x/y in place
+      const node = graphDataRef.current.nodes.find((n) => n.id === newNodeId);
+      if (node?.x !== undefined) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (g as any).centerAt(node.x, node.y, 600);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (g as any).zoom(6, 600);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        setTimeout(() => (g as any).zoomToFit(700, 60), 2400);
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (g as any).zoomToFit(700, 60);
+      }
+    }, 900);
   }
 
   async function handleAutoComplete() {
@@ -322,6 +377,53 @@ export default function GraphView({ userName }: { userName: string }) {
     [highlightIds]
   );
 
+  const linkCanvasObject = useCallback(
+    (link: GraphLink, ctx: CanvasRenderingContext2D) => {
+      const srcNode = link.source as GraphNode;
+      const tgtNode = link.target as GraphNode;
+      if (!srcNode?.x || !tgtNode?.x) return;
+
+      const srcId = srcNode.id ?? "";
+      const tgtId = tgtNode.id ?? "";
+      const highlighted =
+        highlightIds.size === 0 || (highlightIds.has(srcId) && highlightIds.has(tgtId));
+      const baseColor = highlighted ? (ROLE_COLORS[link.roleType] ?? "#6366f1") : "#2a2a2a";
+
+      // Check for draw animation
+      const animKey = `${srcId}-${tgtId}`;
+      const startTime = newLinksRef.current.get(animKey);
+      let progress = 1;
+      if (startTime !== undefined) {
+        progress = Math.min((Date.now() - startTime) / LINK_ANIM_MS, 1);
+        // ease out
+        progress = 1 - Math.pow(1 - progress, 3);
+      }
+
+      const sx = srcNode.x ?? 0, sy = srcNode.y ?? 0;
+      const tx = tgtNode.x ?? 0, ty = tgtNode.y ?? 0;
+      const ex = sx + (tx - sx) * progress;
+      const ey = sy + (ty - sy) * progress;
+
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(ex, ey);
+      ctx.strokeStyle = baseColor;
+      ctx.lineWidth = startTime !== undefined && progress < 1 ? 2.5 : 1.5;
+
+      if (startTime !== undefined && progress < 1) {
+        ctx.shadowColor = baseColor;
+        ctx.shadowBlur = 8;
+      } else {
+        ctx.shadowBlur = 0;
+      }
+
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [highlightIds, imgTick]
+  );
+
   const connectedEntries = selectedNode
     ? entries.filter((e) =>
         selectedNode.type === "person"
@@ -331,7 +433,7 @@ export default function GraphView({ userName }: { userName: string }) {
     : [];
 
   return (
-    <div className="flex flex-col h-screen bg-zinc-950 overflow-hidden">
+    <div className="flex flex-col bg-zinc-950 overflow-hidden" style={{ height: "100dvh" }}>
       {/* Header */}
       <header className="flex items-center gap-3 px-4 pt-4 pb-3 border-b border-zinc-800 shrink-0">
         <div className="flex-1">
@@ -432,8 +534,8 @@ export default function GraphView({ userName }: { userName: string }) {
             backgroundColor="#09090b"
             nodeCanvasObject={nodeCanvasObject as any}
             nodeCanvasObjectMode={() => "replace"}
-            linkColor={linkColor as any}
-            linkWidth={1.5}
+            linkCanvasObject={linkCanvasObject as any}
+            linkCanvasObjectMode={() => "replace"}
             onNodeClick={handleNodeClick as any}
             enableNodeDrag={true}
             enableZoomInteraction={true}
@@ -571,6 +673,8 @@ export default function GraphView({ userName }: { userName: string }) {
         onClose={() => setAddOpen(false)}
         onAdded={onEntryAdded}
       />
+
+      <UnlockToast entry={unlockEntry} onDone={() => setUnlockEntry(null)} />
 
       <ConfirmDialog
         open={confirmAutoComplete}
