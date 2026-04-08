@@ -7,6 +7,7 @@ import AddEntrySheet from "./AddEntrySheet";
 import ConfirmDialog from "./ConfirmDialog";
 import UnlockToast from "./UnlockToast";
 import RulesModal from "./RulesModal";
+import WhatsNewModal from "./WhatsNewModal";
 
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
   ssr: false,
@@ -898,6 +899,7 @@ export default function GraphView({ userName }: { userName: string }) {
       />
 
       <UnlockToast entry={unlockEntry} onDone={() => setUnlockEntry(null)} />
+      <WhatsNewModal />
       <RulesModal open={rulesOpen} onClose={() => setRulesOpen(false)} />
 
       <ConfirmDialog

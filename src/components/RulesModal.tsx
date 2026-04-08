@@ -83,6 +83,19 @@ export default function RulesModal({ open, onClose }: { open: boolean; onClose: 
             </p>
           </Section>
 
+          {/* Cast browser */}
+          <Section title="Adding from a Show">
+            <p className="text-zinc-400 text-sm">
+              Tap a show node to open its panel, then type in the search box. It searches the show&apos;s <strong className="text-white">full TMDB cast</strong> by actor name or character name — even if that person isn&apos;t on your board yet.
+            </p>
+            <p className="text-zinc-400 text-sm mt-2">
+              Tap <strong className="text-white">+</strong> next to any result to add them directly to your graph. Already-added actors show a green checkmark instead.
+            </p>
+            <p className="text-zinc-400 text-sm mt-2">
+              Example: tap Suits → search &quot;Sean Cahill&quot; → Neal McDonough gets added.
+            </p>
+          </Section>
+
           <button
             onClick={onClose}
             className="w-full mt-4 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 font-semibold transition"
