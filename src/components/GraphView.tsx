@@ -148,9 +148,13 @@ export default function GraphView({ userName }: { userName: string }) {
   const [unlockEntry, setUnlockEntry] = useState<Entry | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [panelSearch, setPanelSearch] = useState("");
+  const [viewMode, setViewMode] = useState<"graph" | "list">("graph");
+  const [listGroupBy, setListGroupBy] = useState<"show" | "actor">("show");
   const [tmdbCast, setTmdbCast] = useState<CastMember[]>([]);
   const [castLoading, setCastLoading] = useState(false);
   const [addingCastId, setAddingCastId] = useState<number | null>(null);
+  const [castBrowserShow, setCastBrowserShow] = useState<{ id: number; name: string; poster: string | null; showType: string } | null>(null);
+  const [castBrowserSearch, setCastBrowserSearch] = useState("");
   const graphRef = useRef<ForceGraphMethods<GraphNode>>(undefined);
   const graphDataRef = useRef<GraphData>({ nodes: [], links: [] });
   const newLinksRef = useRef<Map<string, number>>(new Map());
@@ -242,23 +246,20 @@ export default function GraphView({ userName }: { userName: string }) {
     setHighlightIds(matched);
   }, [search, graphData, entries]);
 
-  // Fetch TMDB cast when a show node is selected
+  const IMG_BASE = "https://image.tmdb.org/t/p/w92";
+
+  // Fetch TMDB cast when a graph show node is selected OR the list cast browser opens
   useEffect(() => {
-    if (!selectedNode || selectedNode.type !== "show") {
-      setTmdbCast([]);
-      return;
-    }
-    const showId = selectedNode.id.replace("show-", "");
-    const showType = selectedNode.showType ?? "tv";
+    const id = castBrowserShow?.id ?? (selectedNode?.type === "show" ? parseInt(selectedNode.id.replace("show-", ""), 10) : null);
+    const type = castBrowserShow?.showType ?? selectedNode?.showType ?? "tv";
+    if (!id) { setTmdbCast([]); return; }
     setCastLoading(true);
-    fetch(`/api/tmdb/show/${showId}/credits?type=${showType}`)
+    fetch(`/api/tmdb/show/${id}/credits?type=${type}`)
       .then((r) => r.json())
       .then((data) => setTmdbCast(data.cast ?? []))
       .catch(() => setTmdbCast([]))
       .finally(() => setCastLoading(false));
-  }, [selectedNode?.id]);
-
-  const IMG_BASE = "https://image.tmdb.org/t/p/w92";
+  }, [castBrowserShow?.id, selectedNode?.id]);
 
   function detectRoleFromCast(c: CastMember, showType: string): string {
     if (showType === "movie") {
@@ -273,15 +274,12 @@ export default function GraphView({ userName }: { userName: string }) {
     return c.order < 15 ? "GUEST" : "CAMEO";
   }
 
-  async function handleAddFromCast(cast: CastMember) {
-    if (!selectedNode || selectedNode.type !== "show") return;
+  async function handleAddFromCast(
+    cast: CastMember,
+    show: { id: number; name: string; poster: string | null; showType: string }
+  ) {
     setAddingCastId(cast.id);
-    const showId = parseInt(selectedNode.id.replace("show-", ""), 10);
-    const showName = selectedNode.name;
-    const showPoster = selectedNode.photo ?? null;
-    const showType = selectedNode.showType ?? "tv";
-    const roleType = detectRoleFromCast(cast, showType);
-
+    const roleType = detectRoleFromCast(cast, show.showType);
     try {
       const res = await fetch("/api/entries", {
         method: "POST",
@@ -290,10 +288,10 @@ export default function GraphView({ userName }: { userName: string }) {
           tmdbPersonId: cast.id,
           personName: cast.name,
           personPhoto: cast.profilePath ? `${IMG_BASE}${cast.profilePath}` : null,
-          tmdbShowId: showId,
-          showName,
-          showPoster,
-          showType,
+          tmdbShowId: show.id,
+          showName: show.name,
+          showPoster: show.poster,
+          showType: show.showType,
           characterName: cast.character.trim() || null,
           roleType,
         }),
@@ -613,29 +611,78 @@ export default function GraphView({ userName }: { userName: string }) {
         </button>
       </header>
 
-      {/* Search */}
-      <div className="px-4 py-2 shrink-0">
+      {/* Search + view toggle */}
+      <div className="flex items-center gap-2 px-4 py-2 shrink-0">
         <input
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search actor or show to highlight..."
-          className="w-full px-4 py-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          placeholder={viewMode === "graph" ? "Search to highlight..." : "Filter entries..."}
+          className="flex-1 px-4 py-2 rounded-xl bg-zinc-800 border border-zinc-700 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
         />
+        <button
+          onClick={() => { setViewMode(viewMode === "graph" ? "list" : "graph"); setSearch(""); }}
+          className={`flex items-center gap-1.5 px-3 h-9 rounded-xl border text-xs font-semibold transition shrink-0 ${
+            viewMode === "list"
+              ? "bg-indigo-600 border-indigo-500 text-white"
+              : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-500"
+          }`}
+          title={viewMode === "graph" ? "Switch to list view" : "Switch to graph view"}
+        >
+          {viewMode === "graph" ? (
+            <>
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+              </svg>
+              List
+            </>
+          ) : (
+            <>
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <circle cx="5" cy="5" r="1.5" fill="currentColor" stroke="none" />
+                <circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none" />
+                <circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none" />
+                <circle cx="19" cy="5" r="1.5" fill="currentColor" stroke="none" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M7 5h14M5 7v14M7 12h8M7 19h4" />
+              </svg>
+              Graph
+            </>
+          )}
+        </button>
       </div>
 
-      {/* Legend */}
-      <div className="flex gap-4 px-4 pb-2 shrink-0">
-        {Object.entries(ROLE_COLORS).map(([role, color]) => (
-          <div key={role} className="flex items-center gap-1.5">
-            <div className="w-2 h-2 rounded-full" style={{ background: color }} />
-            <span className="text-xs text-zinc-500 capitalize">{role.toLowerCase()}</span>
+      {/* Legend (graph mode only) + List group-by toggle (list mode only) */}
+      <div className="flex items-center px-4 pb-2 shrink-0">
+        {viewMode === "graph" ? (
+          <div className="flex gap-4">
+            {Object.entries(ROLE_COLORS).map(([role, color]) => (
+              <div key={role} className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-full" style={{ background: color }} />
+                <span className="text-xs text-zinc-500 capitalize">{role.toLowerCase()}</span>
+              </div>
+            ))}
           </div>
-        ))}
+        ) : (
+          <div className="flex gap-1 bg-zinc-800 rounded-lg p-0.5">
+            {(["show", "actor"] as const).map((g) => (
+              <button
+                key={g}
+                onClick={() => setListGroupBy(g)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition ${
+                  listGroupBy === g
+                    ? "bg-zinc-700 text-white"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                By {g.charAt(0).toUpperCase() + g.slice(1)}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Graph */}
-      <div ref={containerRef} className="flex-1 relative overflow-hidden">
+      <div ref={containerRef} className={`flex-1 relative overflow-hidden${viewMode === "list" ? " hidden" : ""}`}>
         {graphData.nodes.length === 0 ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-8 gap-3">
             <div className="w-16 h-16 rounded-full bg-zinc-800 flex items-center justify-center">
@@ -666,8 +713,154 @@ export default function GraphView({ userName }: { userName: string }) {
         )}
       </div>
 
+      {/* List view */}
+      {viewMode === "list" && (
+        <div className="flex-1 overflow-y-auto px-4 pb-4">
+          {entries.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
+              <p className="text-zinc-500 text-sm">No entries yet. Tap + to add your first actor.</p>
+            </div>
+          ) : listGroupBy === "show" ? (
+            /* ── Group by show ── */
+            (() => {
+              const q = search.toLowerCase();
+              const showMap = new Map<number, { name: string; poster: string | null; entries: Entry[] }>();
+              for (const e of entries) {
+                if (!showMap.has(e.tmdbShowId)) showMap.set(e.tmdbShowId, { name: e.showName, poster: e.showPoster, entries: [] });
+                showMap.get(e.tmdbShowId)!.entries.push(e);
+              }
+              const shows = Array.from(showMap.entries())
+                .map(([id, s]) => ({ id, ...s }))
+                .sort((a, b) => a.name.localeCompare(b.name));
+              const filtered = q
+                ? shows.map((s) => ({
+                    ...s,
+                    entries: s.entries.filter(
+                      (e) =>
+                        e.personName.toLowerCase().includes(q) ||
+                        e.characterName?.toLowerCase().includes(q) ||
+                        s.name.toLowerCase().includes(q)
+                    ),
+                  })).filter((s) => s.entries.length > 0)
+                : shows;
+              return (
+                <div className="space-y-5 pt-2">
+                  {filtered.map((s) => (
+                    <div key={s.id}>
+                      <div className="flex items-center gap-3 mb-2">
+                        {s.poster ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={s.poster} alt={s.name} className="w-8 h-12 rounded-md object-cover shrink-0" />
+                        ) : (
+                          <div className="w-8 h-12 rounded-md bg-zinc-800 shrink-0" />
+                        )}
+                        <p className="font-semibold text-white text-sm flex-1">{s.name}</p>
+                        <button
+                          onClick={() => { setCastBrowserShow({ id: s.id, name: s.name, poster: s.poster, showType: entries.find(e => e.tmdbShowId === s.id)?.showType ?? "tv" }); setCastBrowserSearch(""); }}
+                          className="shrink-0 w-7 h-7 rounded-full bg-zinc-700 hover:bg-indigo-600 flex items-center justify-center transition"
+                          title="Browse cast"
+                        >
+                          <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div className="space-y-2 pl-11">
+                        {s.entries.map((e) => (
+                          <div key={e.id} className="flex items-center gap-3">
+                            {e.personPhoto ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={e.personPhoto} alt={e.personName} className="w-7 h-7 rounded-full object-cover object-top shrink-0" />
+                            ) : (
+                              <div className="w-7 h-7 rounded-full bg-zinc-800 shrink-0" />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-white truncate">{e.personName}</p>
+                              {e.characterName && <p className="text-xs text-zinc-500 truncate">as {e.characterName}</p>}
+                            </div>
+                            <span
+                              className="shrink-0 text-xs px-2 py-0.5 rounded-full capitalize"
+                              style={{ background: `${ROLE_COLORS[e.roleType]}22`, color: ROLE_COLORS[e.roleType] }}
+                            >
+                              {e.roleType.toLowerCase()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()
+          ) : (
+            /* ── Group by actor ── */
+            (() => {
+              const q = search.toLowerCase();
+              const actorMap = new Map<number, { name: string; photo: string | null; entries: Entry[] }>();
+              for (const e of entries) {
+                if (!actorMap.has(e.tmdbPersonId)) actorMap.set(e.tmdbPersonId, { name: e.personName, photo: e.personPhoto, entries: [] });
+                actorMap.get(e.tmdbPersonId)!.entries.push(e);
+              }
+              const actors = Array.from(actorMap.entries())
+                .map(([id, a]) => ({ id, ...a }))
+                .sort((a, b) => a.name.localeCompare(b.name));
+              const filtered = q
+                ? actors.map((a) => ({
+                    ...a,
+                    entries: a.entries.filter(
+                      (e) =>
+                        a.name.toLowerCase().includes(q) ||
+                        e.showName.toLowerCase().includes(q) ||
+                        e.characterName?.toLowerCase().includes(q)
+                    ),
+                  })).filter((a) => a.entries.length > 0)
+                : actors;
+              return (
+                <div className="space-y-5 pt-2">
+                  {filtered.map((a) => (
+                    <div key={a.id}>
+                      <div className="flex items-center gap-3 mb-2">
+                        {a.photo ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={a.photo} alt={a.name} className="w-9 h-9 rounded-full object-cover object-top shrink-0" />
+                        ) : (
+                          <div className="w-9 h-9 rounded-full bg-zinc-800 shrink-0" />
+                        )}
+                        <p className="font-semibold text-white text-sm">{a.name}</p>
+                      </div>
+                      <div className="space-y-2 pl-12">
+                        {a.entries.map((e) => (
+                          <div key={e.id} className="flex items-center gap-3">
+                            {e.showPoster ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={e.showPoster} alt={e.showName} className="w-6 h-9 rounded object-cover shrink-0" />
+                            ) : (
+                              <div className="w-6 h-9 rounded bg-zinc-800 shrink-0" />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-white truncate">{e.showName}</p>
+                              {e.characterName && <p className="text-xs text-zinc-500 truncate">as {e.characterName}</p>}
+                            </div>
+                            <span
+                              className="shrink-0 text-xs px-2 py-0.5 rounded-full capitalize"
+                              style={{ background: `${ROLE_COLORS[e.roleType]}22`, color: ROLE_COLORS[e.roleType] }}
+                            >
+                              {e.roleType.toLowerCase()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()
+          )}
+        </div>
+      )}
+
       {/* Selected node detail panel */}
-      {selectedNode && (
+      {selectedNode && viewMode === "graph" && (
         <div className="shrink-0 bg-zinc-900 border-t border-zinc-800 flex flex-col max-h-64">
           {/* Panel header */}
           <div className="flex items-start justify-between px-4 pt-3 pb-2 shrink-0">
@@ -767,7 +960,7 @@ export default function GraphView({ userName }: { userName: string }) {
                           </div>
                         ) : (
                           <button
-                            onClick={() => handleAddFromCast(c)}
+                            onClick={() => handleAddFromCast(c, { id: parseInt(selectedNode.id.replace("show-", ""), 10), name: selectedNode.name, poster: selectedNode.photo ?? null, showType: selectedNode.showType ?? "tv" })}
                             disabled={isAdding}
                             className="shrink-0 w-7 h-7 rounded-full bg-indigo-600 hover:bg-indigo-500 flex items-center justify-center transition disabled:opacity-50"
                           >
@@ -835,6 +1028,103 @@ export default function GraphView({ userName }: { userName: string }) {
         </div>
       )}
 
+
+      {/* List-view cast browser sheet */}
+      {castBrowserShow && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setCastBrowserShow(null)} />
+          <div className="relative bg-zinc-900 rounded-t-3xl w-full max-h-[80vh] flex flex-col">
+            <div className="flex justify-center pt-3 pb-1 shrink-0">
+              <div className="w-10 h-1 rounded-full bg-zinc-700" />
+            </div>
+            <div className="px-4 pb-3 shrink-0 flex items-center gap-3">
+              {castBrowserShow.poster ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={castBrowserShow.poster} alt={castBrowserShow.name} className="w-8 h-12 rounded-md object-cover shrink-0" />
+              ) : null}
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-zinc-500 uppercase tracking-wide">Browse cast</p>
+                <h2 className="font-semibold text-sm truncate">{castBrowserShow.name}</h2>
+              </div>
+              <button onClick={() => setCastBrowserShow(null)} className="text-zinc-500 hover:text-white p-1 shrink-0">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="px-4 pb-3 shrink-0">
+              <input
+                type="search"
+                value={castBrowserSearch}
+                onChange={(e) => setCastBrowserSearch(e.target.value)}
+                placeholder="Search by actor or character..."
+                autoFocus
+                className="w-full px-3 py-2 rounded-xl bg-zinc-800 border border-zinc-700 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div className="flex-1 overflow-y-auto px-4 pb-6 space-y-2">
+              {castLoading ? (
+                <div className="flex justify-center py-8">
+                  <svg className="w-5 h-5 animate-spin text-indigo-400" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                  </svg>
+                </div>
+              ) : (() => {
+                const q = castBrowserSearch.toLowerCase();
+                const filtered = q
+                  ? tmdbCast.filter((c) => c.name.toLowerCase().includes(q) || c.character.toLowerCase().includes(q))
+                  : tmdbCast;
+                if (filtered.length === 0) return (
+                  <p className="text-zinc-500 text-sm text-center py-8">
+                    {castBrowserSearch ? `No results for "${castBrowserSearch}"` : "No cast found"}
+                  </p>
+                );
+                return filtered.map((c) => {
+                  const alreadyAdded = entries.some(e => e.tmdbPersonId === c.id && e.tmdbShowId === castBrowserShow.id);
+                  const isAdding = addingCastId === c.id;
+                  return (
+                    <div key={c.id} className="flex items-center gap-3">
+                      {c.profilePath ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={`${IMG_BASE}${c.profilePath}`} alt={c.name} className="w-9 h-9 rounded-full object-cover object-top shrink-0" />
+                      ) : (
+                        <div className="w-9 h-9 rounded-full bg-zinc-800 shrink-0" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-white truncate">{c.name}</p>
+                        {c.character && <p className="text-xs text-zinc-500 truncate">as {c.character}</p>}
+                      </div>
+                      {alreadyAdded ? (
+                        <svg className="w-5 h-5 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                        </svg>
+                      ) : (
+                        <button
+                          onClick={() => handleAddFromCast(c, castBrowserShow)}
+                          disabled={isAdding}
+                          className="shrink-0 w-7 h-7 rounded-full bg-indigo-600 hover:bg-indigo-500 flex items-center justify-center transition disabled:opacity-50"
+                        >
+                          {isAdding ? (
+                            <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                            </svg>
+                          ) : (
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+                            </svg>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Auto-complete results panel */}
       {autoResults !== null && (
