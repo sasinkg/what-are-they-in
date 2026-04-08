@@ -6,6 +6,8 @@ import type { ForceGraphMethods } from "react-force-graph-2d";
 import AddEntrySheet from "./AddEntrySheet";
 import ConfirmDialog from "./ConfirmDialog";
 import UnlockToast from "./UnlockToast";
+import RulesModal from "./RulesModal";
+import WhatsNewModal from "./WhatsNewModal";
 
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
   ssr: false,
@@ -29,9 +31,19 @@ type GraphNode = {
   name: string;
   type: "person" | "show";
   photo?: string | null;
+  showType?: string;
   val?: number;
   x?: number;
   y?: number;
+};
+
+type CastMember = {
+  id: number;
+  name: string;
+  character: string;
+  profilePath: string | null;
+  order: number;
+  episodeCount?: number;
 };
 
 type GraphLink = {
@@ -77,6 +89,7 @@ function buildGraph(entries: Entry[]): GraphData {
         name: entry.showName,
         type: "show",
         photo: entry.showPoster,
+        showType: entry.showType,
         val: 8,
       });
     }
@@ -133,6 +146,11 @@ export default function GraphView({ userName }: { userName: string }) {
   const [clearing, setClearing] = useState(false);
   const [boardStatus, setBoardStatus] = useState<"unknown" | "complete" | "pending">("unknown");
   const [unlockEntry, setUnlockEntry] = useState<Entry | null>(null);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [panelSearch, setPanelSearch] = useState("");
+  const [tmdbCast, setTmdbCast] = useState<CastMember[]>([]);
+  const [castLoading, setCastLoading] = useState(false);
+  const [addingCastId, setAddingCastId] = useState<number | null>(null);
   const graphRef = useRef<ForceGraphMethods<GraphNode>>(undefined);
   const graphDataRef = useRef<GraphData>({ nodes: [], links: [] });
   const newLinksRef = useRef<Map<string, number>>(new Map());
@@ -179,16 +197,42 @@ export default function GraphView({ userName }: { userName: string }) {
     return () => window.removeEventListener("resize", update);
   }, []);
 
+  // Recalculate graph dimensions when panel opens/closes
+  useEffect(() => {
+    setTimeout(() => {
+      if (containerRef.current) {
+        setDimensions({
+          width: containerRef.current.offsetWidth,
+          height: containerRef.current.offsetHeight,
+        });
+      }
+    }, 0);
+  }, [selectedNode]);
+
   useEffect(() => {
     if (!search.trim()) {
       setHighlightIds(new Set());
       return;
     }
+    // Clear node selection when typing
+    setSelectedNode(null);
     const q = search.toLowerCase();
     const matched = new Set<string>();
+
+    // Match node names (actors + shows)
     graphData.nodes.forEach((n) => {
       if (n.name.toLowerCase().includes(q)) matched.add(n.id);
     });
+
+    // Match character names — highlight both the actor and show nodes
+    entries.forEach((e) => {
+      if (e.characterName?.toLowerCase().includes(q)) {
+        matched.add(`person-${e.tmdbPersonId}`);
+        matched.add(`show-${e.tmdbShowId}`);
+      }
+    });
+
+    // Expand to connected nodes
     graphData.links.forEach((l) => {
       const src = typeof l.source === "object" ? (l.source as GraphNode).id : l.source;
       const tgt = typeof l.target === "object" ? (l.target as GraphNode).id : l.target;
@@ -196,7 +240,72 @@ export default function GraphView({ userName }: { userName: string }) {
       if (matched.has(tgt)) matched.add(src);
     });
     setHighlightIds(matched);
-  }, [search, graphData]);
+  }, [search, graphData, entries]);
+
+  // Fetch TMDB cast when a show node is selected
+  useEffect(() => {
+    if (!selectedNode || selectedNode.type !== "show") {
+      setTmdbCast([]);
+      return;
+    }
+    const showId = selectedNode.id.replace("show-", "");
+    const showType = selectedNode.showType ?? "tv";
+    setCastLoading(true);
+    fetch(`/api/tmdb/show/${showId}/credits?type=${showType}`)
+      .then((r) => r.json())
+      .then((data) => setTmdbCast(data.cast ?? []))
+      .catch(() => setTmdbCast([]))
+      .finally(() => setCastLoading(false));
+  }, [selectedNode?.id]);
+
+  const IMG_BASE = "https://image.tmdb.org/t/p/w92";
+
+  function detectRoleFromCast(c: CastMember, showType: string): string {
+    if (showType === "movie") {
+      if (c.order < 5) return "MAIN";
+      if (c.order < 20) return "GUEST";
+      return "CAMEO";
+    }
+    const eps = c.episodeCount ?? 0;
+    if (eps >= 20) return "MAIN";
+    if (eps >= 4) return "RECURRING";
+    if (eps >= 2) return "GUEST";
+    return c.order < 15 ? "GUEST" : "CAMEO";
+  }
+
+  async function handleAddFromCast(cast: CastMember) {
+    if (!selectedNode || selectedNode.type !== "show") return;
+    setAddingCastId(cast.id);
+    const showId = parseInt(selectedNode.id.replace("show-", ""), 10);
+    const showName = selectedNode.name;
+    const showPoster = selectedNode.photo ?? null;
+    const showType = selectedNode.showType ?? "tv";
+    const roleType = detectRoleFromCast(cast, showType);
+
+    try {
+      const res = await fetch("/api/entries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tmdbPersonId: cast.id,
+          personName: cast.name,
+          personPhoto: cast.profilePath ? `${IMG_BASE}${cast.profilePath}` : null,
+          tmdbShowId: showId,
+          showName,
+          showPoster,
+          showType,
+          characterName: cast.character.trim() || null,
+          roleType,
+        }),
+      });
+      if (res.ok) {
+        const entry = await res.json();
+        onEntryAdded(entry);
+      }
+    } finally {
+      setAddingCastId(null);
+    }
+  }
 
   function startLinkAnimation() {
     if (animFrameRef.current) return;
@@ -291,7 +400,23 @@ export default function GraphView({ userName }: { userName: string }) {
   }
 
   const handleNodeClick = useCallback((node: GraphNode) => {
-    setSelectedNode((prev) => (prev?.id === node.id ? null : node));
+    setPanelSearch("");
+    setSelectedNode((prev) => {
+      if (prev?.id === node.id) {
+        setHighlightIds(new Set());
+        return null;
+      }
+      // Highlight the clicked node + everything directly connected
+      const ids = new Set<string>([node.id]);
+      graphDataRef.current.links.forEach((l) => {
+        const src = typeof l.source === "object" ? (l.source as GraphNode).id : l.source;
+        const tgt = typeof l.target === "object" ? (l.target as GraphNode).id : l.target;
+        if (src === node.id) ids.add(tgt);
+        if (tgt === node.id) ids.add(src);
+      });
+      setHighlightIds(ids);
+      return node;
+    });
   }, []);
 
   const nodeCanvasObject = useCallback(
@@ -365,17 +490,6 @@ export default function GraphView({ userName }: { userName: string }) {
     [highlightIds, selectedNode, imgTick]
   );
 
-  const linkColor = useCallback(
-    (link: GraphLink) => {
-      const src = typeof link.source === "object" ? (link.source as GraphNode).id : link.source;
-      const tgt = typeof link.target === "object" ? (link.target as GraphNode).id : link.target;
-      const highlighted =
-        highlightIds.size === 0 || (highlightIds.has(src) && highlightIds.has(tgt));
-      const base = ROLE_COLORS[link.roleType] ?? "#6366f1";
-      return highlighted ? base : "#2a2a2a";
-    },
-    [highlightIds]
-  );
 
   const linkCanvasObject = useCallback(
     (link: GraphLink, ctx: CanvasRenderingContext2D) => {
@@ -436,6 +550,13 @@ export default function GraphView({ userName }: { userName: string }) {
     <div className="flex flex-col bg-zinc-950 overflow-hidden" style={{ height: "100dvh" }}>
       {/* Header */}
       <header className="flex items-center gap-3 px-4 pt-4 pb-3 border-b border-zinc-800 shrink-0">
+        <button
+          onClick={() => setRulesOpen(true)}
+          className="w-8 h-8 rounded-full bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 flex items-center justify-center transition shrink-0 text-zinc-400 hover:text-white text-sm font-bold"
+          title="How it works"
+        >
+          ?
+        </button>
         <div className="flex-1">
           <p className="text-xs text-zinc-500">Hey, {userName}</p>
           <h1 className="text-lg font-bold leading-tight">What Are They In?</h1>
@@ -514,7 +635,7 @@ export default function GraphView({ userName }: { userName: string }) {
       </div>
 
       {/* Graph */}
-      <div ref={containerRef} className="flex-1 relative">
+      <div ref={containerRef} className="flex-1 relative overflow-hidden">
         {graphData.nodes.length === 0 ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-8 gap-3">
             <div className="w-16 h-16 rounded-full bg-zinc-800 flex items-center justify-center">
@@ -547,8 +668,9 @@ export default function GraphView({ userName }: { userName: string }) {
 
       {/* Selected node detail panel */}
       {selectedNode && (
-        <div className="shrink-0 bg-zinc-900 border-t border-zinc-800 px-4 py-4 max-h-56 overflow-y-auto">
-          <div className="flex items-start justify-between mb-3">
+        <div className="shrink-0 bg-zinc-900 border-t border-zinc-800 flex flex-col max-h-64">
+          {/* Panel header */}
+          <div className="flex items-start justify-between px-4 pt-3 pb-2 shrink-0">
             <div className="flex items-center gap-3">
               {selectedNode.photo && (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -556,9 +678,7 @@ export default function GraphView({ userName }: { userName: string }) {
                   src={selectedNode.photo}
                   alt={selectedNode.name}
                   className={`object-cover shrink-0 ${
-                    selectedNode.type === "show"
-                      ? "w-8 h-12 rounded-md"
-                      : "w-10 h-10 rounded-full"
+                    selectedNode.type === "show" ? "w-8 h-12 rounded-md" : "w-9 h-9 rounded-full object-top"
                   }`}
                 />
               )}
@@ -566,51 +686,155 @@ export default function GraphView({ userName }: { userName: string }) {
                 <p className="text-xs text-zinc-500 uppercase tracking-wide">
                   {selectedNode.type === "person" ? "Actor" : "Show"}
                 </p>
-                <h2 className="font-semibold text-base leading-tight">{selectedNode.name}</h2>
+                <h2 className="font-semibold text-sm leading-tight">{selectedNode.name}</h2>
               </div>
             </div>
-            <button onClick={() => setSelectedNode(null)} className="text-zinc-500 hover:text-white p-1 shrink-0">
+            <button
+              onClick={() => { setSelectedNode(null); setHighlightIds(new Set()); setPanelSearch(""); }}
+              className="text-zinc-500 hover:text-white p-1 shrink-0"
+            >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </div>
-          <div className="space-y-2">
-            {connectedEntries.map((e) => (
-              <div key={e.id} className="flex items-center gap-3">
-                {/* Thumbnail */}
-                {selectedNode.type === "person" ? (
-                  e.showPoster ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={e.showPoster} alt={e.showName} className="w-6 h-9 rounded object-cover shrink-0" />
-                  ) : (
-                    <div className="w-6 h-9 rounded bg-zinc-800 shrink-0" />
-                  )
-                ) : e.personPhoto ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={e.personPhoto} alt={e.personName} className="w-7 h-7 rounded-full object-cover shrink-0" />
-                ) : (
-                  <div className="w-7 h-7 rounded-full bg-zinc-800 shrink-0" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-white truncate">
-                    {selectedNode.type === "person" ? e.showName : e.personName}
-                  </p>
-                  {e.characterName && (
-                    <p className="text-xs text-zinc-500 truncate">as {e.characterName}</p>
-                  )}
+
+          {/* Search — for shows: searches TMDB full cast; for actors: filters their shows */}
+          <div className="px-4 pb-2 shrink-0">
+            <input
+              type="search"
+              value={panelSearch}
+              onChange={(e) => setPanelSearch(e.target.value)}
+              placeholder={
+                selectedNode.type === "show"
+                  ? "Search full cast to add..."
+                  : "Filter shows..."
+              }
+              className="w-full px-3 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            />
+          </div>
+
+          <div className="overflow-y-auto px-4 pb-3 space-y-2">
+            {selectedNode.type === "show" && panelSearch.trim() ? (
+              // TMDB full-cast search results
+              castLoading ? (
+                <div className="flex items-center gap-2 text-zinc-500 text-xs py-2">
+                  <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                  </svg>
+                  Loading cast...
                 </div>
-                <div
-                  className="shrink-0 text-xs px-2 py-0.5 rounded-full capitalize"
-                  style={{ background: `${ROLE_COLORS[e.roleType]}22`, color: ROLE_COLORS[e.roleType] }}
-                >
-                  {e.roleType.toLowerCase()}
-                </div>
-              </div>
-            ))}
+              ) : (
+                tmdbCast
+                  .filter((c) => {
+                    const q = panelSearch.toLowerCase();
+                    return (
+                      c.name.toLowerCase().includes(q) ||
+                      c.character.toLowerCase().includes(q)
+                    );
+                  })
+                  .slice(0, 40)
+                  .map((c) => {
+                    const showId = parseInt(selectedNode.id.replace("show-", ""), 10);
+                    const alreadyAdded = entries.some(
+                      (e) => e.tmdbPersonId === c.id && e.tmdbShowId === showId
+                    );
+                    const isAdding = addingCastId === c.id;
+                    return (
+                      <div key={c.id} className="flex items-center gap-3">
+                        {c.profilePath ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={`${IMG_BASE}${c.profilePath}`}
+                            alt={c.name}
+                            className="w-7 h-7 rounded-full object-cover object-top shrink-0"
+                          />
+                        ) : (
+                          <div className="w-7 h-7 rounded-full bg-zinc-800 flex items-center justify-center text-zinc-500 text-xs shrink-0">?</div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-white truncate">{c.name}</p>
+                          {c.character && (
+                            <p className="text-xs text-zinc-500 truncate">as {c.character}</p>
+                          )}
+                        </div>
+                        {alreadyAdded ? (
+                          <div className="shrink-0 w-7 h-7 rounded-full bg-green-500/20 flex items-center justify-center">
+                            <svg className="w-3.5 h-3.5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                            </svg>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => handleAddFromCast(c)}
+                            disabled={isAdding}
+                            className="shrink-0 w-7 h-7 rounded-full bg-indigo-600 hover:bg-indigo-500 flex items-center justify-center transition disabled:opacity-50"
+                          >
+                            {isAdding ? (
+                              <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                              </svg>
+                            ) : (
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+                              </svg>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })
+              )
+            ) : (
+              // Existing connected entries (default view)
+              connectedEntries
+                .filter((e) => {
+                  if (!panelSearch.trim()) return true;
+                  const q = panelSearch.toLowerCase();
+                  return (
+                    e.personName.toLowerCase().includes(q) ||
+                    e.characterName?.toLowerCase().includes(q) ||
+                    e.showName.toLowerCase().includes(q)
+                  );
+                })
+                .map((e) => (
+                  <div key={e.id} className="flex items-center gap-3">
+                    {selectedNode.type === "person" ? (
+                      e.showPoster ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={e.showPoster} alt={e.showName} className="w-6 h-9 rounded object-cover shrink-0" />
+                      ) : (
+                        <div className="w-6 h-9 rounded bg-zinc-800 shrink-0" />
+                      )
+                    ) : e.personPhoto ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={e.personPhoto} alt={e.personName} className="w-7 h-7 rounded-full object-cover object-top shrink-0" />
+                    ) : (
+                      <div className="w-7 h-7 rounded-full bg-zinc-800 shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-white truncate">
+                        {selectedNode.type === "person" ? e.showName : e.personName}
+                      </p>
+                      {e.characterName && (
+                        <p className="text-xs text-zinc-500 truncate">as {e.characterName}</p>
+                      )}
+                    </div>
+                    <div
+                      className="shrink-0 text-xs px-2 py-0.5 rounded-full capitalize"
+                      style={{ background: `${ROLE_COLORS[e.roleType]}22`, color: ROLE_COLORS[e.roleType] }}
+                    >
+                      {e.roleType.toLowerCase()}
+                    </div>
+                  </div>
+                ))
+            )}
           </div>
         </div>
       )}
+
 
       {/* Auto-complete results panel */}
       {autoResults !== null && (
@@ -675,6 +899,8 @@ export default function GraphView({ userName }: { userName: string }) {
       />
 
       <UnlockToast entry={unlockEntry} onDone={() => setUnlockEntry(null)} />
+      <WhatsNewModal />
+      <RulesModal open={rulesOpen} onClose={() => setRulesOpen(false)} />
 
       <ConfirmDialog
         open={confirmAutoComplete}
