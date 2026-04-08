@@ -21,8 +21,36 @@ type TMDBShow = {
 
 type RoleType = "MAIN" | "RECURRING" | "GUEST" | "CAMEO";
 
-const ROLE_OPTIONS: RoleType[] = ["MAIN", "RECURRING", "GUEST", "CAMEO"];
 const IMG = "https://image.tmdb.org/t/p/w92";
+
+const ROLE_COLORS: Record<RoleType, string> = {
+  MAIN: "#6366f1",
+  RECURRING: "#22d3ee",
+  GUEST: "#f59e0b",
+  CAMEO: "#a78bfa",
+};
+
+function detectRoleType(credit: {
+  episode_count?: number;
+  order?: number;
+  media_type?: string;
+}): RoleType {
+  const isMovie = credit.media_type === "movie";
+  if (isMovie) {
+    const order = credit.order ?? 999;
+    if (order < 5) return "MAIN";
+    if (order < 20) return "GUEST";
+    return "CAMEO";
+  }
+  // TV
+  const eps = credit.episode_count ?? 0;
+  if (eps >= 20) return "MAIN";
+  if (eps >= 4) return "RECURRING";
+  if (eps >= 2) return "GUEST";
+  // 1 episode — use billing order to distinguish guest vs cameo
+  const order = credit.order ?? 999;
+  return order < 15 ? "GUEST" : "CAMEO";
+}
 
 export default function AddEntrySheet({
   open,
@@ -34,7 +62,7 @@ export default function AddEntrySheet({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onAdded: (entry: any) => void;
 }) {
-  const [step, setStep] = useState<"person" | "show" | "role">("person");
+  const [step, setStep] = useState<"person" | "show" | "confirm">("person");
   const [personQuery, setPersonQuery] = useState("");
   const [personResults, setPersonResults] = useState<TMDBPerson[]>([]);
   const [selectedPerson, setSelectedPerson] = useState<TMDBPerson | null>(null);
@@ -42,8 +70,8 @@ export default function AddEntrySheet({
   const [showResults, setShowResults] = useState<TMDBShow[]>([]);
   const [selectedShow, setSelectedShow] = useState<TMDBShow | null>(null);
   const [characterName, setCharacterName] = useState("");
-  const [characterLoading, setCharacterLoading] = useState(false);
-  const [roleType, setRoleType] = useState<RoleType>("MAIN");
+  const [roleType, setRoleType] = useState<RoleType>("GUEST");
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const personTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -58,7 +86,7 @@ export default function AddEntrySheet({
       setShowResults([]);
       setSelectedShow(null);
       setCharacterName("");
-      setRoleType("MAIN");
+      setRoleType("GUEST");
     }
   }, [open]);
 
@@ -88,32 +116,31 @@ export default function AddEntrySheet({
     }, 350);
   }, [showQuery]);
 
-  // Auto-fetch character name from TMDB when both person and show are selected
-  async function fetchCharacterName(person: TMDBPerson, show: TMDBShow) {
-    setCharacterLoading(true);
-    setCharacterName("");
+  async function selectShow(show: TMDBShow) {
+    setSelectedShow(show);
+    setStep("confirm");
+    if (!selectedPerson) return;
+
+    setLoading(true);
     try {
-      const res = await fetch(`/api/tmdb/person/${person.id}`);
+      const res = await fetch(`/api/tmdb/person/${selectedPerson.id}`);
       const data = await res.json();
-      const allCredits = [
-        ...(data.credits?.cast ?? []),
-        ...(data.credits?.crew ?? []),
-      ];
-      const match = allCredits.find(
-        (c: { id: number; character?: string }) => c.id === show.id
-      );
-      if (match?.character) {
-        setCharacterName(match.character);
+      const allCredits: Array<{
+        id: number;
+        character?: string;
+        episode_count?: number;
+        order?: number;
+        media_type?: string;
+      }> = [...(data.credits?.cast ?? []), ...(data.credits?.crew ?? [])];
+
+      const match = allCredits.find((c) => c.id === show.id);
+      if (match) {
+        if (match.character) setCharacterName(match.character);
+        setRoleType(detectRoleType({ ...match, media_type: show.media_type }));
       }
     } finally {
-      setCharacterLoading(false);
+      setLoading(false);
     }
-  }
-
-  function selectShow(show: TMDBShow) {
-    setSelectedShow(show);
-    setStep("role");
-    if (selectedPerson) fetchCharacterName(selectedPerson, show);
   }
 
   async function handleSave() {
@@ -149,7 +176,6 @@ export default function AddEntrySheet({
     <div className="fixed inset-0 z-50 flex flex-col justify-end">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-zinc-900 rounded-t-3xl w-full max-h-[85vh] flex flex-col">
-        {/* Handle */}
         <div className="flex justify-center pt-3 pb-1 shrink-0">
           <div className="w-10 h-1 rounded-full bg-zinc-700" />
         </div>
@@ -159,17 +185,17 @@ export default function AddEntrySheet({
           <p className="text-zinc-500 text-sm">
             {step === "person" && "Search for an actor"}
             {step === "show" && `Which show is ${selectedPerson?.name} in?`}
-            {step === "role" && `${selectedPerson?.name} in ${selectedShow?.name ?? selectedShow?.title}`}
+            {step === "confirm" && `Confirm details`}
           </p>
         </div>
 
         {/* Steps */}
         <div className="flex gap-1.5 px-4 pb-3 shrink-0">
-          {(["person", "show", "role"] as const).map((s, i) => (
+          {(["person", "show", "confirm"] as const).map((s, i) => (
             <div
               key={s}
               className={`h-1 flex-1 rounded-full transition-colors ${
-                i <= ["person", "show", "role"].indexOf(step) ? "bg-indigo-500" : "bg-zinc-700"
+                i <= ["person", "show", "confirm"].indexOf(step) ? "bg-indigo-500" : "bg-zinc-700"
               }`}
             />
           ))}
@@ -197,7 +223,7 @@ export default function AddEntrySheet({
                   >
                     {p.profile_path ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={`${IMG}${p.profile_path}`} alt={p.name} className="w-10 h-10 rounded-full object-cover shrink-0" />
+                      <img src={`${IMG}${p.profile_path}`} alt={p.name} className="w-10 h-10 rounded-full object-cover object-top shrink-0" />
                     ) : (
                       <div className="w-10 h-10 rounded-full bg-zinc-700 flex items-center justify-center shrink-0 text-zinc-400 text-xs">?</div>
                     )}
@@ -257,8 +283,8 @@ export default function AddEntrySheet({
             </div>
           )}
 
-          {/* Step 3: Role */}
-          {step === "role" && (
+          {/* Step 3: Confirm */}
+          {step === "confirm" && selectedPerson && selectedShow && (
             <div className="space-y-4">
               <button onClick={() => setStep("show")} className="flex items-center gap-1.5 text-zinc-400 text-sm hover:text-white">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -267,53 +293,80 @@ export default function AddEntrySheet({
                 Back
               </button>
 
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm text-zinc-300">Character name</label>
-                  {characterLoading && (
-                    <span className="text-xs text-indigo-400 flex items-center gap-1">
-                      <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-                      </svg>
-                      Looking up...
-                    </span>
-                  )}
-                  {!characterLoading && characterName && (
-                    <span className="text-xs text-zinc-500">from TMDB</span>
-                  )}
+              {/* Summary card */}
+              <div className="flex items-center gap-3 p-3 rounded-xl bg-zinc-800">
+                {selectedPerson.profile_path ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={`${IMG}${selectedPerson.profile_path}`} alt={selectedPerson.name} className="w-10 h-10 rounded-full object-cover object-top shrink-0" />
+                ) : (
+                  <div className="w-10 h-10 rounded-full bg-zinc-700 shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-sm">{selectedPerson.name}</p>
+                  <p className="text-xs text-zinc-500">{selectedShow.name ?? selectedShow.title}</p>
                 </div>
-                <input
-                  type="text"
-                  value={characterName}
-                  onChange={(e) => setCharacterName(e.target.value)}
-                  placeholder="Auto-filled from TMDB if available"
-                  className="w-full px-4 py-3 rounded-xl bg-zinc-800 border border-zinc-700 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
+                {selectedShow.poster_path && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={`${IMG}${selectedShow.poster_path}`} alt="" className="w-8 h-11 rounded object-cover shrink-0" />
+                )}
               </div>
 
-              <div>
-                <label className="block text-sm text-zinc-300 mb-2">Role type</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {ROLE_OPTIONS.map((r) => (
-                    <button
-                      key={r}
-                      onClick={() => setRoleType(r)}
-                      className={`py-3 rounded-xl text-sm font-medium transition border ${
-                        roleType === r
-                          ? "bg-indigo-600 border-indigo-500 text-white"
-                          : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700"
-                      }`}
-                    >
-                      {r.charAt(0) + r.slice(1).toLowerCase()}
-                    </button>
-                  ))}
+              {loading ? (
+                <div className="flex items-center gap-2 text-zinc-500 text-sm">
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                  </svg>
+                  Looking up role from TMDB...
                 </div>
-              </div>
+              ) : (
+                <>
+                  {/* Role type badge — auto detected, user can tap to override */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-sm text-zinc-300">Role type <span className="text-zinc-500">(auto-detected)</span></label>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2">
+                      {(["MAIN", "RECURRING", "GUEST", "CAMEO"] as RoleType[]).map((r) => (
+                        <button
+                          key={r}
+                          onClick={() => setRoleType(r)}
+                          className="py-2 rounded-xl text-xs font-medium transition border"
+                          style={roleType === r ? {
+                            background: `${ROLE_COLORS[r]}22`,
+                            borderColor: ROLE_COLORS[r],
+                            color: ROLE_COLORS[r],
+                          } : {
+                            background: "transparent",
+                            borderColor: "#3f3f46",
+                            color: "#71717a",
+                          }}
+                        >
+                          {r.charAt(0) + r.slice(1).toLowerCase()}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Character name */}
+                  <div>
+                    <label className="block text-sm text-zinc-300 mb-2">
+                      Character name <span className="text-zinc-500">(auto-filled)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={characterName}
+                      onChange={(e) => setCharacterName(e.target.value)}
+                      placeholder="Unknown"
+                      className="w-full px-4 py-3 rounded-xl bg-zinc-800 border border-zinc-700 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </>
+              )}
 
               <button
                 onClick={handleSave}
-                disabled={saving || characterLoading}
+                disabled={saving || loading}
                 className="w-full py-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 font-semibold transition disabled:opacity-50"
               >
                 {saving ? "Saving..." : "Add to Graph"}
